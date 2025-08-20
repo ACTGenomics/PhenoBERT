@@ -9,6 +9,8 @@ import time
 import logging
 import warnings
 from typing import Dict, List, Tuple, Optional
+from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 
 # Import PhenoBERT modules
 from api import annotate_text, get_most_related_HPO_term
@@ -205,7 +207,8 @@ class PhenoBERTAPI:
     
     def annotate_batch(self, texts: List[str], **kwargs) -> Dict[str, Dict[str, str]]:
         """
-        Annotate multiple texts
+        Annotate multiple texts using parallel processing with 10 threads
+        並行處理版本 - 注意：只有在確認模型線程安全時才使用
         
         Args:
             texts: List of texts to annotate
@@ -214,23 +217,48 @@ class PhenoBERTAPI:
         Returns:
             Dictionary mapping each text to its annotation info
         """
-        results = {}
+        if not texts:
+            return {}
         
-        for text in texts:
+        # 固定使用 10 個執行緒
+        max_workers = 10
+        show_progress = kwargs.pop('show_progress', True)
+        
+        # 預分配結果數組
+        results = [None] * len(texts)
+        
+        def process_single(args):
+            idx, text = args
             try:
                 result = self.annotate_text(text, **kwargs)
-                results[text] = {
+                annotation_result = {
                     "hpo_terms": result[text],
                     "hpo_ids": result["hpo_ids"]
                 }
+                return idx, text, annotation_result
             except Exception as e:
-                logger.error(f"Error annotating text '{text[:50]}...': {e}")
-                results[text] = {
+                logger.error(f"Error processing index {idx}: {e}")
+                return idx, text, {
                     "hpo_terms": "",
                     "hpo_ids": ""
                 }
         
-        return results
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_single, (i, text)) 
+                      for i, text in enumerate(texts)]
+            
+            iterator = tqdm(futures, desc="Processing in parallel") if show_progress else futures
+            
+            for future in iterator:
+                idx, text, annotation_result = future.result()
+                results[idx] = (text, annotation_result)
+        
+        # 轉換為原始格式的字典
+        final_results = {}
+        for text, annotation_result in results:
+            final_results[text] = annotation_result
+        
+        return final_results
     
     def get_model_info(self) -> Dict[str, str]:
         """
@@ -275,13 +303,21 @@ if __name__ == "__main__":
         print(f"HPO annotations: {result[test_text]}")
         print(f"HPO IDs: {result['hpo_ids']}")
         
-        # Test batch annotation
+        # Test batch annotation (always parallel with 10 threads)
         test_texts = [
             "Patient has fever and headache.",
-            "Observed growth retardation and developmental delay."
+            "Observed growth retardation and developmental delay.",
+            "The patient shows signs of muscular dystrophy.",
+            "Cardiac abnormalities were detected during examination.",
+            "Patient exhibits autistic behavior and social communication deficits."
         ]
         
+        print(f"\n=== Testing Parallel Processing (10 threads, {len(test_texts)} texts) ===")
+        start_time = time.time()
         batch_results = api.annotate_batch(test_texts)
+        processing_time = time.time() - start_time
+        print(f"Parallel processing time: {processing_time:.2f} seconds")
+        
         print("\nBatch results:")
         for text, annotation in batch_results.items():
             print(f"Text: {text}")
