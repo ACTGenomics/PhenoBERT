@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  phenobert-api:
+    build: .
+    ports:
+      - "8222:8000"
+    volumes:
+      - ./phenobert/models:/PhenoBert/phenobert/models:ro
+      - ./phenobert/embeddings:/PhenoBert/phenobert/embeddings:ro
+      - ./phenobert/data:/PhenoBert/phenobert/data:ro
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    runtime: nvidia
+    restart: unless-stopped
